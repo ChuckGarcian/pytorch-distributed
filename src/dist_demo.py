@@ -1,5 +1,7 @@
-import os
+# Title: dist_demo.py
+# Author: Charles "Chuck" Garcia
 
+import os
 import torch
 import torch.distributed as dist
 
