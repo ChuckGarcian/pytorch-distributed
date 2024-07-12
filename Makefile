@@ -1,16 +1,15 @@
-# Slurm Parameters
-NODES := 1                    # Node Count
-NTASKS := 1                   # total number of tasks across all nodes
-EMAIL := cg1509@princeton.edu # Output Email
-NCORES := 2                   # cpu-cores per task (>1 if multi-threaded tasks)
-MEM := 32G 										# memory per cpu-core (4G is default)
-NGPU := 1                     # Number GPUS per node
-JNAME := pytorch-dist
-
 # Directories
 OUTPUT := _output
-SLURM_DIR := run2.slurm
-MAIN := python3 example.py
+SLURM_DIR := slurm
+MAIN_DIR := src
+
+# Target Scripts
+SLURM = run.slurm
+MAIN := main.py
+
+# Misc
+JNAME  := pytorch-dist
+SLURM_PATH := ../$(SLURM_DIR)/$(SLURM)
 
 # Colors 
 BBlack='\033[1;30m'       # Black
@@ -23,15 +22,10 @@ BCyan='\033[1;36m'        # Cyan
 BWhite='\033[1;37m'       # White
 NC='\033[0m' # No Color
 
-
 all: clean
 	@mkdir -p $(OUTPUT)
-	
-	$(eval SB_ARGS := --nodes=$(NODES) --ntasks=$(NTASKS) --mail-user=$(EMAIL) \
-										--cpus-per-task=$(NCORES) --job-name=$(JNAME)        \
-										--mem-per-cpu=$(MEM))
 	$(eval SB_ARGS := --job-name=$(JNAME))
-	$(eval SLURM_JOB_ID := $(shell sbatch --parsable $(SB_ARGS) $(SLURM_DIR)))
+	$(eval SLURM_JOB_ID := $(shell cd $(MAIN_DIR) && sbatch --parsable $(SB_ARGS) $(SLURM_PATH) $(MAIN) && cd ..))
 	$(eval FULL_OUTPUT := $(OUTPUT)/$(JNAME).$(SLURM_JOB_ID).out)
 	@echo -e $(BBlue) Output file name: $(FULL_OUTPUT) $(NC)
 	@echo -e $(BYellow) Waiting for Job to start... $(NC)

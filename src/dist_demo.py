@@ -1,5 +1,4 @@
 import os
-import argparse
 
 import torch
 import torch.distributed as dist
@@ -13,8 +12,8 @@ backend = "nccl"
 
 def run(backend):
     """
-    Test/Toy kernel to run on a node
-    """
+    Test/Toy kernel to run on a node: Each node will say hi
+    """ 
     print (f"Called run, backend={backend}")    
     if WORLD_RANK == 0:
         print(
@@ -26,11 +25,30 @@ def run(backend):
             f"Hello world! This is worker {WORLD_RANK} speaking. I have {WORLD_SIZE - 1} siblings!"
         )
 
+def run2(backend):
+    """
+    Test/Toy kernel to run on a node: Node 0 will send node 1 a tensor
+    """         
+    tensor = torch.zeros(1)
+    
+    # Need to put tensor on a GPU device for nccl backend
+    if backend == 'nccl':
+        device = torch.device("cuda:{}".format(LOCAL_RANK))
+        tensor = tensor.to(device)
+
+    if WORLD_RANK == 0:
+        for rank_recv in range(1, WORLD_SIZE):
+            dist.send(tensor=tensor, dst=rank_recv)
+            print('worker_{} sent data to Rank {}\n'.format(0, rank_recv))
+    else:
+        dist.recv(tensor=tensor, src=0)
+        print('worker_{} has received data from rank {}\n'.format(WORLD_RANK, 0))
+
 def init_processes(backend):
     print (f"Called init_processes, backend={backend}")
     dist.init_process_group(backend, rank=WORLD_RANK, world_size=WORLD_SIZE)
     print("Exited init_process_group")
-    run(backend)
+    run2(backend)
 
 if __name__ == "__main__":
     print(f"args.backend:{backend}")
