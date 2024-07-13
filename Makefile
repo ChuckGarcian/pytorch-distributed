@@ -5,7 +5,7 @@ MAIN_DIR := src
 
 # Target Scripts
 SLURM?=gpu.slurm
-MAIN?=test.py
+MAIN?=distributed_reconstructor.py
 
 # Misc
 JNAME  := pytorch-dist
