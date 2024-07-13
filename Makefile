@@ -4,8 +4,8 @@ SLURM_DIR := slurm
 MAIN_DIR := src
 
 # Target Scripts
-SLURM?=single.slurm
-MAIN?=main.py
+SLURM?=gpu.slurm
+MAIN?=test.py
 
 # Misc
 JNAME  := pytorch-dist
