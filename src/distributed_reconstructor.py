@@ -13,11 +13,16 @@ LOCAL_RANK = WORLD_RANK - gpus_per_node * (WORLD_RANK // gpus_per_node)
 MASTER_RANK = 0
 backend = "nccl"
 
+def get_difference (expected, actual):
+    diff = torch.abs (expected - actual)
+    return torch.min (diff)
+
 class DistributedReconstructor:
   def __init__(self, _smart_order, _tensor_size):
       self.smart_order = _smart_order
       self.tensor_size = _tensor_size
       self.dyn_size = 0
+      self.refference = torch.zeros (self.tensor_size**self.smart_order)
 
   def get_paulibase_probability (self):
     '''
@@ -25,11 +30,23 @@ class DistributedReconstructor:
     to be kroneckerd
     '''
     kronecker_components = []
+    ref_comp = None
     
+    # add to result list and compute refference
     for _ in range (self.smart_order):
-      kronecker_components.append (torch.ones (self.tensor_size, device = 'cpu') * self.dyn_size)
+      
+      new_comp = torch.rand (self.tensor_size, device = 'cpu') * self.dyn_size
+      
+      if (ref_comp == None):
+        ref_comp = new_comp
+      else :
+         ref_comp = torch.kron (ref_comp, new_comp)
+      
+      kronecker_components.append (new_comp)
+      
       self.dyn_size +=1
     
+    self.refference += ref_comp
     print ("Generated Component list Length: {}".format(len(kronecker_components)))
     return kronecker_components
 
@@ -42,15 +59,19 @@ class DistributedReconstructor:
           summation_term = self.get_paulibase_probability()
           summation_terms_sequence.append(torch.stack(summation_term, dim=0))
     
-      # Batch all uncomputed product tuples we need into batches
+      # Batch all uncomputed product tuples into batches
       batches = torch.stack(summation_terms_sequence).chunk (chunks=(WORLD_SIZE - 1))
       
       # Send off to nodes for compute
-      
-      for batch in batches:
+      for dst_rank, batch in enumerate(batches):
          shape_data = batch.shape
-         dist.send (torch.tensor(shape_data).cuda(), dst=1) 
-         dist.send (batch.cuda (), dst=1) 
+         dist.send (torch.tensor(shape_data).cuda(), dst=dst_rank+1) 
+         dist.send (batch.cuda (),  dst=dst_rank+1) 
+
+      buff = torch.zeros (self.tensor_size**self.smart_order).cuda ()
+      dist.reduce(buff, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
+      
+      print ("Difference: {}".format(get_difference(buff, self.refference.cuda ())))
                                 
 def vec_kronecker (components):
   '''
@@ -62,7 +83,7 @@ def vec_kronecker (components):
   for kron_prod in components[1:]:
     res = torch.kron (res, kron_prod)
 
-  return dist.reduce(res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
+  return res
 
 def single_node (device):
     # -- Represents Computation On a SINGLE node --
