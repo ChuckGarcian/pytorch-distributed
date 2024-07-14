@@ -46,6 +46,7 @@ class DistributedReconstructor:
       batches = torch.stack(summation_terms_sequence).chunk (chunks=(WORLD_SIZE - 1))
       
       # Send off to nodes for compute
+      
       for batch in batches:
          shape_data = batch.shape
          dist.send (torch.tensor(shape_data).cuda(), dst=1) 
@@ -61,7 +62,7 @@ def vec_kronecker (components):
   for kron_prod in components[1:]:
     res = torch.kron (res, kron_prod)
 
-  return res
+  return dist.reduce(res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
 
 def single_node (device):
     # -- Represents Computation On a SINGLE node --
@@ -79,6 +80,10 @@ def single_node (device):
     res = torch.func.vmap (vec_kronecker) (batch_recieved)
     res = res.sum (dim=0)
     print ("Res: {}".format (res.shape)) 
+    
+    # Send Back to master
+    dist.reduce(res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
+    
 
 def main (backend):
   print ("Creating Distributed Reconstructor")
