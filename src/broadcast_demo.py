@@ -16,25 +16,22 @@ def example_broadcast():
     dist.init_process_group(backend, rank=WORLD_RANK, world_size=WORLD_SIZE)
     device = torch.device("cuda:{}".format(LOCAL_RANK))
                 
-    # Create new group without host machine
-    list_without_0 = list(range(1, WORLD_SIZE))
-    group = dist.new_group()
-    print ("\ngroup: {}".format (list_without_0))      
     
     # Broadcast if host and receive if worker
     if (LOCAL_RANK == 0):
       # Create matrix rxc=2x5 with elements from 0 to 9
-      t1 = torch.arange (0, 15).reshape (2, 5).to (device)
+      t1 = torch.arange (0, 10).reshape (2, 5).to (device)
       print ("Host, tensor broadcasting: {}".format(t1), end="\n\n")
 
       # Broadcast it
-      dist.broadcast (t1, src=0, group=group)
+      x = dist.broadcast (t1, src=0, async_op=True)
     else:
       # Verify 
       received_tensor = torch.zeros (5, dtype=torch.int64).to (device)
-      dist.broadcast (received_tensor, src=0, group=group)
+      y = dist.broadcast (received_tensor, src=0, async_op=True)
+      
       print ("Rank {}, received tensor: {}".format (LOCAL_RANK, received_tensor), end="\n\n")
         
 
 if __name__ == "__main__":
-    example_reduce()
+    example_broadcast()
