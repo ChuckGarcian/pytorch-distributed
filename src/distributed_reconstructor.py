@@ -118,8 +118,11 @@ class DistributedReconstructor:
          print ("host batch: {}".format(batch))
          dist.send (batch.cuda (),  dst=dst_rank+1) 
 
-      buff = torch.zeros (self.result_size).cuda ()
+      buff = torch.zeros (self.result_size, dtype=torch.int64).cuda ()
+      print ("About to reduce!")
       dist.reduce(buff, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
+      print (f'buff{buff}')
+      print (f'self.reference{self.reference}')
       print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
       print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
                                 
@@ -137,7 +140,8 @@ def vec_kronecker (components, tensor_sizes):
   for kron_prod in components[1:]:
     print ("kronprod!")
     print (kron_prod)
-    res = torch.kron (res, kron_prod)
+    idx = tensor_sizes[i]
+    res = torch.kron (res, kron_prod[0:idx])
     i += 1
 
   return res
@@ -166,7 +170,7 @@ def single_node (device):
     print (print (f"worker batchreceived {batch_recieved.shape}"))
     # Call vectorized kronecker and do sum reduce on this node
     lambda_fn = lambda x: vec_kronecker (x, tensor_sizes)
-    vec_fn = torch.func.vmap (lambda_fn, in_dims=1)
+    vec_fn = torch.func.vmap (lambda_fn)
     res = vec_fn (batch_recieved)
     print ("Res: {}".format (res.shape), flush=True) 
     
@@ -174,7 +178,7 @@ def single_node (device):
     res = res.sum (dim=0)
     
     # Send Back to master
-    dist.reduce(res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
+    dist.reduce (res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
     
 
 def main (backend):
