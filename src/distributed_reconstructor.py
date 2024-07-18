@@ -70,8 +70,6 @@ class DistributedReconstructor:
     
     # add to result list and compute refference
     for size in self.tensor_sizes:
-      print (size)
-      # new_comp = torch.arange (size, device = 'cpu') 
       new_comp = torch.ones (size, dtype=torch.int64, device = 'cpu') * self.dyn_size
 
       if (ref_comp == None):
@@ -79,9 +77,7 @@ class DistributedReconstructor:
       else :
          ref_comp = torch.kron (ref_comp, new_comp)
 
-      print (new_comp)      
       pad_amount = self.max_effective - size 
-      print (f"padamoutn: {pad_amount}")
       new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount)) 
       print (new_comp[0:size] , end='\n\n')      
   
@@ -90,7 +86,6 @@ class DistributedReconstructor:
       self.dyn_size +=1
     
     self.reference += ref_comp
-    print ("Generated Component list Length: {}".format(len(kronecker_components)))
     return kronecker_components
 
   def compute(self):
@@ -113,16 +108,13 @@ class DistributedReconstructor:
          dist.send (torch.tensor(tensor_sizes_shape, dtype=torch.int64).cuda(), dst=dst_rank+1) 
          dist.send (tensor_sizes_data, dst=dst_rank+1)
          dist.send (torch.tensor(shape_data).cuda(), dst=dst_rank+1) 
-         
-         print ("host batch.shape: {}".format(batch.shape))
-         print ("host batch: {}".format(batch))
          dist.send (batch.cuda (),  dst=dst_rank+1) 
-
-      buff = torch.zeros (self.result_size, dtype=torch.int64).cuda ()
+      
       print ("About to reduce!")
+      buff = torch.zeros (self.result_size, dtype=torch.int64).cuda ()
       dist.reduce(buff, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
-      print (f'buff{buff}')
-      print (f'self.reference{self.reference}')
+
+
       print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
       print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
                                 
@@ -133,13 +125,10 @@ def vec_kronecker (components, tensor_sizes):
   components = torch.unbind (components, dim=0)
   
   val = tensor_sizes [0]
-  print (f"val:{val}")
   res = (components [0]) [0:val] 
   
   i = 1
   for kron_prod in components[1:]:
-    print ("kronprod!")
-    print (kron_prod)
     idx = tensor_sizes[i]
     res = torch.kron (res, kron_prod[0:idx])
     i += 1
@@ -163,20 +152,14 @@ def single_node (device):
     
     # Create and empty batch tensor and recieve it's data
     batch_recieved = torch.empty (tuple(shape_tensor), dtype=torch.int64, device=device) 
-    
-    print (shape_tensor)
     dist.recv (tensor=batch_recieved, src = MASTER_RANK)    
-    print (f"worker batchreceived {batch_recieved}")
-    print (print (f"worker batchreceived {batch_recieved.shape}"))
+    
     # Call vectorized kronecker and do sum reduce on this node
     lambda_fn = lambda x: vec_kronecker (x, tensor_sizes)
     vec_fn = torch.func.vmap (lambda_fn)
-    res = vec_fn (batch_recieved)
-    print ("Res: {}".format (res.shape), flush=True) 
-    
-    
+    res = vec_fn (batch_recieved)    
     res = res.sum (dim=0)
-    
+
     # Send Back to master
     dist.reduce (res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
     
