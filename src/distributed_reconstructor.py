@@ -5,6 +5,7 @@ import os
 import torch
 import torch.distributed as dist
 import numpy as np
+from typing import List
 import copy
 
 
@@ -55,9 +56,9 @@ class DistributedReconstructor:
   def __init__(self, tensor_sizes=[3, 4, 5]):
       self.dyn_size = 0
       self.tensor_sizes = tensor_sizes
-      self.max_effective = np.max (self.tensor_sizes)
-      self.result_size = (self.max_effective ** len(self.tensor_sizes)) # np.prod (self.tensor_sizes)
-      self.reference = torch.zeros (self.max_effective ** len(self.tensor_sizes))
+      self.max_effective = np.max (self.tensor_sizes) # Used to pad
+      self.result_size = np.prod (self.tensor_sizes)  # Result Tensor Size
+      self.reference = torch.zeros (self.result_size) # Compared to actual result
       
   def get_paulibase_probability (self):
     '''
@@ -69,10 +70,9 @@ class DistributedReconstructor:
     
     # add to result list and compute refference
     for size in self.tensor_sizes:
-      new_comp = torch.rand (size, device = 'cpu') * self.dyn_size
-
-      pad_amount = self.max_effective - size 
-      new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount))
+      print (size)
+      # new_comp = torch.arange (size, device = 'cpu') 
+      new_comp = torch.ones (size, dtype=torch.int64, device = 'cpu') * self.dyn_size
 
       if (ref_comp == None):
         ref_comp = new_comp
@@ -80,6 +80,12 @@ class DistributedReconstructor:
          ref_comp = torch.kron (ref_comp, new_comp)
 
       print (new_comp)      
+      pad_amount = self.max_effective - size 
+      print (f"padamoutn: {pad_amount}")
+      new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount)) 
+      print (new_comp[0:size] , end='\n\n')      
+  
+
       kronecker_components.append (new_comp)
       self.dyn_size +=1
     
@@ -98,11 +104,18 @@ class DistributedReconstructor:
     
       # Batch all uncomputed product tuples into batches
       batches = torch.stack(summation_terms_sequence).chunk (chunks=(WORLD_SIZE - 1))
+      tensor_sizes_data = torch.tensor(self.tensor_sizes, dtype=torch.int64).cuda () # Used to strip zero padding 
 
       # Send off to nodes for compute
       for dst_rank, batch in enumerate(batches):
          shape_data = batch.shape
-         dist.send (torch.tensor(shape_data, dtype=torch.int64).cuda(), dst=dst_rank+1) 
+         tensor_sizes_shape = tensor_sizes_data.shape 
+         dist.send (torch.tensor(tensor_sizes_shape, dtype=torch.int64).cuda(), dst=dst_rank+1) 
+         dist.send (tensor_sizes_data, dst=dst_rank+1)
+         dist.send (torch.tensor(shape_data).cuda(), dst=dst_rank+1) 
+         
+         print ("host batch.shape: {}".format(batch.shape))
+         print ("host batch: {}".format(batch))
          dist.send (batch.cuda (),  dst=dst_rank+1) 
 
       buff = torch.zeros (self.result_size).cuda ()
@@ -110,20 +123,34 @@ class DistributedReconstructor:
       print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
       print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
                                 
-def vec_kronecker (components):
+def vec_kronecker (components, tensor_sizes):
   '''
   Vectorized kronecker product of the tensor in components
-  '''   
+  '''  
   components = torch.unbind (components, dim=0)
-  res = components [0]
   
+  val = tensor_sizes [0]
+  print (f"val:{val}")
+  res = (components [0]) [0:val] 
+  
+  i = 1
   for kron_prod in components[1:]:
+    print ("kronprod!")
+    print (kron_prod)
     res = torch.kron (res, kron_prod)
+    i += 1
 
   return res
 
 def single_node (device):
     # -- Represents Computation On a SINGLE node --
+    
+    # Receive Tensor list information
+    tensor_sizes_shape = torch.zeros([1], dtype=torch.int64, device=device) 
+    dist.recv (tensor=tensor_sizes_shape, src = MASTER_RANK)     
+    tensor_sizes = torch.zeros (tuple(tensor_sizes_shape), dtype=torch.int64, device=device) 
+    dist.recv (tensor=tensor_sizes, src = MASTER_RANK)    
+    print ("tensor_sizes: {}".format(tensor_sizes))
 
     # Get shape of the batch we are receiving 
     shape_tensor = torch.zeros([3], dtype=torch.int64, device=device) 
@@ -131,13 +158,20 @@ def single_node (device):
     print ("Rank 1, shapetuple = {}".format(shape_tensor))
     
     # Create and empty batch tensor and recieve it's data
-    batch_recieved = torch.empty (tuple(shape_tensor), device=device) 
+    batch_recieved = torch.empty (tuple(shape_tensor), dtype=torch.int64, device=device) 
+    
+    print (shape_tensor)
     dist.recv (tensor=batch_recieved, src = MASTER_RANK)    
-  
+    print (f"worker batchreceived {batch_recieved}")
+    print (print (f"worker batchreceived {batch_recieved.shape}"))
     # Call vectorized kronecker and do sum reduce on this node
-    res = torch.func.vmap (vec_kronecker) (batch_recieved)
+    lambda_fn = lambda x: vec_kronecker (x, tensor_sizes)
+    vec_fn = torch.func.vmap (lambda_fn, in_dims=1)
+    res = vec_fn (batch_recieved)
+    print ("Res: {}".format (res.shape), flush=True) 
+    
+    
     res = res.sum (dim=0)
-    print ("Res: {}".format (res.shape)) 
     
     # Send Back to master
     dist.reduce(res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)

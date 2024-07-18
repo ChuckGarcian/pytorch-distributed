@@ -1,7 +1,9 @@
 import torch
+import numpy as np
 
-def fn (v):
-  # print (v) 
+def fn (v, given_list):
+  # print (v)
+  # print (f"print! {given_list}")
   return torch.sum (v)
 
 def main ():
@@ -10,7 +12,9 @@ def main ():
   print ("t1: {}".format(t1))
   
   # Vectorize Fn
-  vec_fn = torch.func.vmap (fn, in_dims=0)
+  list_val = np.array ([0, 1, 2]) # List to pass to vectorized func
+  lambda_fn = lambda x: fn (x, list_val)
+  vec_fn = torch.func.vmap (lambda_fn)
   res = vec_fn (t1)
   print ("vec_fn (t1): {}".format(res))
   
