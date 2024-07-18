@@ -4,6 +4,40 @@
 import os
 import torch
 import torch.distributed as dist
+import numpy as np
+import copy
+
+
+
+def MSE(target, obs):
+    """
+    Mean Square Error
+    """
+    target = copy.deepcopy(target)
+    obs = copy.deepcopy(obs)
+    if isinstance(target, dict):
+        se = 0
+        for t_idx in target:
+            t = target[t_idx]
+            o = obs[t_idx]
+            se += (t - o) ** 2
+        mse = se / len(obs)
+    elif isinstance(target, np.ndarray) and isinstance(obs, np.ndarray):
+        target = target.reshape(-1, 1)
+        obs = obs.reshape(-1, 1)
+        squared_diff = (target - obs) ** 2
+        se = np.sum(squared_diff)
+        mse = np.mean(squared_diff)
+    elif isinstance(target, np.ndarray) and isinstance(obs, dict):
+        se = 0
+        for o_idx in obs:
+            o = obs[o_idx]
+            t = target[o_idx]
+            se += (t - o) ** 2
+        mse = se / len(obs)
+    else:
+        raise Exception("target type : %s" % type(target))
+    return mse
 
 # Environment variables set by slurm script
 gpus_per_node = int (os.environ["SLURM_GPUS_ON_NODE"])
@@ -13,17 +47,18 @@ LOCAL_RANK = WORLD_RANK - gpus_per_node * (WORLD_RANK // gpus_per_node)
 MASTER_RANK = 0
 backend = "nccl"
 
-def get_difference (expected, actual):
+def get_difference (actual, expected):
     diff = torch.abs (expected - actual)
     return torch.min (diff)
 
 class DistributedReconstructor:
-  def __init__(self, _smart_order, _tensor_size):
-      self.smart_order = _smart_order
-      self.tensor_size = _tensor_size
+  def __init__(self, tensor_sizes=[3, 4, 5]):
       self.dyn_size = 0
-      self.refference = torch.zeros (self.tensor_size**self.smart_order)
-
+      self.tensor_sizes = tensor_sizes
+      self.max_effective = np.max (self.tensor_sizes)
+      self.result_size = (self.max_effective ** len(self.tensor_sizes)) # np.prod (self.tensor_sizes)
+      self.reference = torch.zeros (self.max_effective ** len(self.tensor_sizes))
+      
   def get_paulibase_probability (self):
     '''
     Emulates the subcircuit outs measured in a paulibase - the returned list is 
@@ -33,20 +68,22 @@ class DistributedReconstructor:
     ref_comp = None
     
     # add to result list and compute refference
-    for _ in range (self.smart_order):
-      
-      new_comp = torch.rand (self.tensor_size, device = 'cpu') * self.dyn_size
-      
+    for size in self.tensor_sizes:
+      new_comp = torch.rand (size, device = 'cpu') * self.dyn_size
+
+      pad_amount = self.max_effective - size 
+      new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount))
+
       if (ref_comp == None):
         ref_comp = new_comp
       else :
          ref_comp = torch.kron (ref_comp, new_comp)
-      
+
+      print (new_comp)      
       kronecker_components.append (new_comp)
-      
       self.dyn_size +=1
     
-    self.refference += ref_comp
+    self.reference += ref_comp
     print ("Generated Component list Length: {}".format(len(kronecker_components)))
     return kronecker_components
 
@@ -61,17 +98,17 @@ class DistributedReconstructor:
     
       # Batch all uncomputed product tuples into batches
       batches = torch.stack(summation_terms_sequence).chunk (chunks=(WORLD_SIZE - 1))
-      
+
       # Send off to nodes for compute
       for dst_rank, batch in enumerate(batches):
          shape_data = batch.shape
-         dist.send (torch.tensor(shape_data).cuda(), dst=dst_rank+1) 
+         dist.send (torch.tensor(shape_data, dtype=torch.int64).cuda(), dst=dst_rank+1) 
          dist.send (batch.cuda (),  dst=dst_rank+1) 
 
-      buff = torch.zeros (self.tensor_size**self.smart_order).cuda ()
+      buff = torch.zeros (self.result_size).cuda ()
       dist.reduce(buff, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
-      
-      print ("Difference: {}".format(get_difference(buff, self.refference.cuda ())))
+      print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
+      print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
                                 
 def vec_kronecker (components):
   '''
@@ -91,9 +128,9 @@ def single_node (device):
     # Get shape of the batch we are receiving 
     shape_tensor = torch.zeros([3], dtype=torch.int64, device=device) 
     dist.recv (tensor=shape_tensor, src = MASTER_RANK) 
+    print ("Rank 1, shapetuple = {}".format(shape_tensor))
     
     # Create and empty batch tensor and recieve it's data
-    print ("Rank 1, shapetuple = {}".format(shape_tensor))
     batch_recieved = torch.empty (tuple(shape_tensor), device=device) 
     dist.recv (tensor=batch_recieved, src = MASTER_RANK)    
   
@@ -116,7 +153,7 @@ def main (backend):
   
   # Master Process collect all that needs to be computed
   if (WORLD_RANK == MASTER_RANK):
-    dr = DistributedReconstructor (3, 5)
+    dr = DistributedReconstructor ()
     print ("Calling compute")
     dr.compute ()
   else:
