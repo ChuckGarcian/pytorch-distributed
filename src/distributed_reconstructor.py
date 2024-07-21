@@ -6,6 +6,8 @@ import torch
 import torch.distributed as dist
 import numpy as np
 from typing import List
+from time import perf_counter
+
 import copy
 
 
@@ -53,13 +55,14 @@ def get_difference (actual, expected):
     return torch.min (diff)
 
 class DistributedReconstructor:
+  @torch.no_grad
   def __init__(self, tensor_sizes=[3, 4, 5]):
       self.dyn_size = 0
       self.tensor_sizes = tensor_sizes
       self.max_effective = np.max (self.tensor_sizes) # Used to pad
       self.result_size = np.prod (self.tensor_sizes)  # Result Tensor Size
-      self.reference = torch.zeros (self.result_size) # Compared to actual result
-      
+      # self.reference = torch.empty (self.result_size) # Compared to actual result
+  @torch.no_grad      
   def get_paulibase_probability (self):
     '''
     Emulates the subcircuit outs measured in a paulibase - the returned list is 
@@ -72,22 +75,22 @@ class DistributedReconstructor:
     for size in self.tensor_sizes:
       new_comp = torch.ones (size, dtype=torch.int64, device = 'cpu') * self.dyn_size
 
-      if (ref_comp == None):
-        ref_comp = new_comp
-      else :
-         ref_comp = torch.kron (ref_comp, new_comp)
+      # if (ref_comp == None):
+        # ref_comp = new_comp
+      # else :
+      #  ref_comp = torch.kron (ref_comp, new_comp)
 
       pad_amount = self.max_effective - size 
       new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount)) 
-      print (new_comp[0:size] , end='\n\n')      
+      # print (new_comp[0:size] , end='\n\n')      
   
 
       kronecker_components.append (new_comp)
       self.dyn_size +=1
     
-    self.reference += ref_comp
+    # self.reference += ref_comp
     return kronecker_components
-
+  @torch.no_grad
   def compute(self):
       dataset_size = 8
       summation_terms_sequence = []
@@ -111,13 +114,14 @@ class DistributedReconstructor:
          dist.send (batch.cuda (),  dst=dst_rank+1) 
       
       print ("About to reduce!")
-      buff = torch.zeros (self.result_size, dtype=torch.int64).cuda ()
+      buff = torch.empty (self.result_size, dtype=torch.int64).cuda ()
       dist.reduce(buff, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
 
 
-      print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
-      print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
-                                
+      # print ("Difference MSE: {}".format(MSE (self.reference.cpu ().numpy(), buff.cpu().numpy())), flush=True)
+      # print ("Difference diff: {}".format(get_difference (self.reference.cpu(), buff.cpu())), flush=True)
+
+@torch.no_grad                                
 def vec_kronecker (components, tensor_sizes):
   '''
   Vectorized kronecker product of the tensor in components
@@ -134,19 +138,19 @@ def vec_kronecker (components, tensor_sizes):
     i += 1
 
   return res
-
+@torch.no_grad
 def single_node (device):
     # -- Represents Computation On a SINGLE node --
     
     # Receive Tensor list information
-    tensor_sizes_shape = torch.zeros([1], dtype=torch.int64, device=device) 
+    tensor_sizes_shape = torch.empty([1], dtype=torch.int64, device=device) 
     dist.recv (tensor=tensor_sizes_shape, src = MASTER_RANK)     
-    tensor_sizes = torch.zeros (tuple(tensor_sizes_shape), dtype=torch.int64, device=device) 
+    tensor_sizes = torch.empty (tuple(tensor_sizes_shape), dtype=torch.int64, device=device) 
     dist.recv (tensor=tensor_sizes, src = MASTER_RANK)    
     print ("tensor_sizes: {}".format(tensor_sizes))
 
     # Get shape of the batch we are receiving 
-    shape_tensor = torch.zeros([3], dtype=torch.int64, device=device) 
+    shape_tensor = torch.empty([3], dtype=torch.int64, device=device) 
     dist.recv (tensor=shape_tensor, src = MASTER_RANK) 
     print ("Rank 1, shapetuple = {}".format(shape_tensor))
     
@@ -163,7 +167,7 @@ def single_node (device):
     # Send Back to master
     dist.reduce (res, dst=MASTER_RANK, op=dist.ReduceOp.SUM)
     
-
+@torch.no_grad
 def main (backend):
   print ("Creating Distributed Reconstructor")
   print(f"Hello world! This is worker {WORLD_RANK} speaking. I have {WORLD_SIZE - 1} siblings!")
@@ -174,9 +178,18 @@ def main (backend):
   
   # Master Process collect all that needs to be computed
   if (WORLD_RANK == MASTER_RANK):
-    dr = DistributedReconstructor ()
+    tensor_sizes = np.array ([6, 6, 6, 8] * 6)
+    dr = DistributedReconstructor (list(tensor_sizes))
     print ("Calling compute")
+    
+    start_time = perf_counter()
     dr.compute ()
+    end_time = perf_counter() - start_time
+    print (f"Tensor Sizes: {tensor_sizes}")
+    print (f"Tensor Result Size: {dr.result_size}")
+    print (f"Compute Time: {end_time}")
+    dist.destroy_process_group() 
+    
   else:
     single_node (device)
     
