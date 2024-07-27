@@ -80,7 +80,7 @@ class DistributedReconstructor:
       # else :
       #  ref_comp = torch.kron (ref_comp, new_comp)
 
-      pad_amount = self.max_effective - size 
+      # pad_amount = self.max_effective - size 
       new_comp = torch.nn.functional.pad (new_comp, (0, pad_amount)) 
       # print (new_comp[0:size] , end='\n\n')      
   
